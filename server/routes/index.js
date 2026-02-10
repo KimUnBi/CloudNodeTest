@@ -10,7 +10,7 @@ router.get('/', (req,res)=>{
 })
 
 // 데이터 받아올 부분 
-router.post('/getData', (req,res)=>{
+router.post('/api/getData', (req,res)=>{
     console.log('getData Router', req.body)
 
     // nick 데이터를 DB에 넣어보자! 
