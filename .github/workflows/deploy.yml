@@ -1,4 +1,4 @@
-name: Deploy to NCP (Public Nginx + Private Node)
+name: Deploy (Public Nginx + Private Node)
 
 on:
   push:
@@ -6,11 +6,82 @@ on:
   workflow_dispatch:
 
 jobs:
-  deploy:
+  # ------------------------------------------------------------
+  # 1) 프론트(React/Vite) 빌드 & Public(Nginx) 배포
+  # ------------------------------------------------------------
+  build-and-deploy-frontend:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
 
     steps:
-      - name: Deploy via Public (Bastion)
+      # (1) 레포 체크아웃
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # (2) React 빌드용 Node 세팅
+      # ⚠️ node 24는 가능하긴 한데, 실무/호환성은 LTS(20 또는 22) 추천
+      - name: Setup Node (for building React)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: client/package-lock.json
+
+      # (3) React 빌드 -> client/dist 생성
+      - name: Build React (client/dist)
+        working-directory: client
+        run: |
+          npm ci
+          npm run build
+          test -d dist
+
+      # (4-0) Public 서버에 dist 업로드 받을 폴더 생성
+      - name: Ensure web root exists on Public
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.PUBLIC_HOST }}
+          username: ${{ secrets.PUBLIC_USER }}
+          key: ${{ secrets.PUBLIC_SSH_KEY }}
+          script: |
+            sudo mkdir -p "/usr/share/nginx/html"
+            sudo chown -R $USER:$USER "/usr/share/nginx/html" || true
+
+      # (4) dist를 Public 서버 Nginx root로 업로드
+      - name: Upload dist to Public Server (Nginx web root)
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.PUBLIC_HOST }}
+          username: ${{ secrets.PUBLIC_USER }}
+          key: ${{ secrets.PUBLIC_SSH_KEY }}
+          source: "client/dist/**"
+          target: "${{ secrets.PUBLIC_WEB_ROOT }}"
+          strip_components: 2
+
+      # (5) nginx 설정 검사 후 reload
+      - name: Reload Nginx on Public
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.PUBLIC_HOST }}
+          username: ${{ secrets.PUBLIC_USER }}
+          key: ${{ secrets.PUBLIC_SSH_KEY }}
+          script: |
+            sudo nginx -t
+            sudo systemctl reload nginx
+
+  # ------------------------------------------------------------
+  # 2) 백엔드(Node/PM2) Private 서버 배포 (Public을 배스천으로 경유)
+  # ------------------------------------------------------------
+  deploy-backend:
+    runs-on: ubuntu-latest
+    needs: [build-and-deploy-frontend]
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Deploy backend to Private via Public (Bastion)
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.PUBLIC_HOST }}
@@ -19,68 +90,43 @@ jobs:
           script: |
             set -e
 
-            # ====== 1) PUBLIC: repo pull ======
-            REPO_DIR="/root/CLOUDNODETEST"   # 원하면 경로 바꾸기
-            if [ ! -d "$REPO_DIR/.git" ]; then
-              git clone https://github.com/KimUnBi/CloudNodeTest.git "$REPO_DIR"
-            fi
-
-            cd "$REPO_DIR"
-            git fetch --all
-            git reset --hard origin/main
-
-            # ====== 2) PUBLIC: React build & publish to nginx ======
-            cd "$REPO_DIR/client"
-
-            # nvm 사용하는 경우, 비로그인 쉘에서 nvm 로드 필요
-            export NVM_DIR="$HOME/.nvm"
-            if [ -s "$NVM_DIR/nvm.sh" ]; then
-              . "$NVM_DIR/nvm.sh"
-            fi
-
-            # node가 없다면 여기서 nvm으로 설치 가능(서버 1회 세팅 후에는 생략됨)
-            # nvm install --lts
-            # nvm use --lts
-
-            npm ci
-            npm run build
-
-            # dist -> nginx 정적 경로로 반영 (경로는 너 환경에 맞게)
-            sudo mkdir -p /var/www/react
-            sudo rsync -av --delete "$REPO_DIR/client/dist/" /var/www/react/
-            sudo nginx -t
-            sudo systemctl reload nginx
-
-            # ====== 3) PRIVATE: deploy node via ssh from public ======
-            # private 접속 키가 public 서버에 있어야 함(혹은 여기서 heredoc으로 키 전달하는 방식도 가능)
-            # 가장 단순: public 서버에 /root/.ssh/private_key 같은 키를 준비해두고 사용
-
-            ssh -o StrictHostKeyChecking=no ${{ secrets.PRIVATE_USER }}@${{ secrets.PRIVATE_HOST }} << 'EOF'
+            # -------------------------------------------------
+            # Public 서버에서 Private 서버로 SSH 접속
+            # (Public에 이미 Private 접속 키가 등록되어 있다는 전제)
+            # -------------------------------------------------
+            ssh -o StrictHostKeyChecking=no root@10.10.20.7 << 'EOF'
               set -e
 
-              REPO_DIR="/root/CLOUDNODETEST"
-              if [ ! -d "$REPO_DIR/.git" ]; then
-                git clone https://github.com/KimUnBi/CloudNodeTest.git "$REPO_DIR"
+              # ------------------------------
+              # 배포 경로/레포 URL (Private 서버 기준)
+              # ------------------------------
+              REPO_URL="${{ secrets.REPO_URL }}"
+              APP_DIR="${{ secrets.PRIVATE_APP_DIR }}"
+
+              # (0) 앱 디렉토리 준비
+              mkdir -p "$APP_DIR"
+
+              # (1) 최초 배포면 clone
+              if [ ! -d "$APP_DIR/.git" ]; then
+                git clone "$REPO_URL" "$APP_DIR"
               fi
 
-              cd "$REPO_DIR"
+              # (2) 최신 main 동기화
+              cd "$APP_DIR"
               git fetch --all
               git reset --hard origin/main
 
-              cd "$REPO_DIR/server"
+              # (3) 백엔드 폴더로 이동
+              cd "$APP_DIR/server"
 
-              # nvm 환경 로드(필요시)
-              export NVM_DIR="$HOME/.nvm"
-              if [ -s "$NVM_DIR/nvm.sh" ]; then
-                . "$NVM_DIR/nvm.sh"
-              fi
-
+              # (4) 의존성 설치 (NAT GW 있으니 가능)
               npm ci --omit=dev
 
-              # pm2 프로세스명은 너가 쓰는 이름으로 맞추기
-              pm2 describe api-server > /dev/null 2>&1 \
-                && pm2 reload api-server \
+              # (5) PM2 재시작/기동 (프로세스명: myapp-server)
+              pm2 describe myapp-server > /dev/null 2>&1 \
+                && pm2 reload myapp-server \
                 || pm2 start server.js --name myapp-server
 
+              # (6) PM2 저장
               pm2 save
             EOF
