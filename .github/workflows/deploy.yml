@@ -1,0 +1,86 @@
+name: Deploy to NCP (Public Nginx + Private Node)
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy via Public (Bastion)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.PUBLIC_HOST }}
+          username: ${{ secrets.PUBLIC_USER }}
+          key: ${{ secrets.PUBLIC_SSH_KEY }}
+          script: |
+            set -e
+
+            # ====== 1) PUBLIC: repo pull ======
+            REPO_DIR="/root/CLOUDNODETEST"   # 원하면 경로 바꾸기
+            if [ ! -d "$REPO_DIR/.git" ]; then
+              git clone https://github.com/KimUnBi/CloudNodeTest.git "$REPO_DIR"
+            fi
+
+            cd "$REPO_DIR"
+            git fetch --all
+            git reset --hard origin/main
+
+            # ====== 2) PUBLIC: React build & publish to nginx ======
+            cd "$REPO_DIR/client"
+
+            # nvm 사용하는 경우, 비로그인 쉘에서 nvm 로드 필요
+            export NVM_DIR="$HOME/.nvm"
+            if [ -s "$NVM_DIR/nvm.sh" ]; then
+              . "$NVM_DIR/nvm.sh"
+            fi
+
+            # node가 없다면 여기서 nvm으로 설치 가능(서버 1회 세팅 후에는 생략됨)
+            # nvm install --lts
+            # nvm use --lts
+
+            npm ci
+            npm run build
+
+            # dist -> nginx 정적 경로로 반영 (경로는 너 환경에 맞게)
+            sudo mkdir -p /var/www/react
+            sudo rsync -av --delete "$REPO_DIR/client/dist/" /var/www/react/
+            sudo nginx -t
+            sudo systemctl reload nginx
+
+            # ====== 3) PRIVATE: deploy node via ssh from public ======
+            # private 접속 키가 public 서버에 있어야 함(혹은 여기서 heredoc으로 키 전달하는 방식도 가능)
+            # 가장 단순: public 서버에 /root/.ssh/private_key 같은 키를 준비해두고 사용
+
+            ssh -o StrictHostKeyChecking=no ${{ secrets.PRIVATE_USER }}@${{ secrets.PRIVATE_HOST }} << 'EOF'
+              set -e
+
+              REPO_DIR="/root/CLOUDNODETEST"
+              if [ ! -d "$REPO_DIR/.git" ]; then
+                git clone https://github.com/KimUnBi/CloudNodeTest.git "$REPO_DIR"
+              fi
+
+              cd "$REPO_DIR"
+              git fetch --all
+              git reset --hard origin/main
+
+              cd "$REPO_DIR/server"
+
+              # nvm 환경 로드(필요시)
+              export NVM_DIR="$HOME/.nvm"
+              if [ -s "$NVM_DIR/nvm.sh" ]; then
+                . "$NVM_DIR/nvm.sh"
+              fi
+
+              npm ci --omit=dev
+
+              # pm2 프로세스명은 너가 쓰는 이름으로 맞추기
+              pm2 describe api-server > /dev/null 2>&1 \
+                && pm2 reload api-server \
+                || pm2 start server.js --name myapp-server
+
+              pm2 save
+            EOF
