@@ -25,9 +25,6 @@ router.post('/getData', (req,res)=>{
             res.json({status : 500})
         }
     })
-
-
-
 })
 
 module.exports = router;
