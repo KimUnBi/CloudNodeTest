@@ -122,9 +122,9 @@ jobs:
             cd \"\$APP_DIR/server\"
             npm ci --omit=dev
 
-            pm2 describe myapp-server >/dev/null 2>&1 \
-              && pm2 reload myapp-server \
-              || pm2 start server.js --name myapp-server
+            pm2 describe new-server >/dev/null 2>&1 \
+              && pm2 reload new-server \
+              || pm2 start server.js --name new-server
 
             pm2 save
           '"

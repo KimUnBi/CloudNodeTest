@@ -9,7 +9,7 @@ function App() {
   const sendToServer = ()=>{
     console.log('sendToServer', data)
 
-    // front 데이터를 server로 전송 
+    // front 데이터를 server로 전송  --> proxy url로 변경필요
     axios.post('/myweb/getData', {
       data : data
     }).then(res => {

@@ -9,7 +9,7 @@ router.get('/', (req,res)=>{
     res.sendFile(path.join(__dirname, '../client/dist/index.html'))
 })
 
-// 데이터 받아올 부분 --> proxy url로 변경필요
+// 데이터 받아올 부분
 router.post('/getData', (req,res)=>{
     console.log('getData Router', req.body)
 
