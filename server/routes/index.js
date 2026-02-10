@@ -9,8 +9,8 @@ router.get('/', (req,res)=>{
     res.sendFile(path.join(__dirname, '../client/dist/index.html'))
 })
 
-// 데이터 받아올 부분 
-router.post('/myweb/getData', (req,res)=>{
+// 데이터 받아올 부분 --> proxy url로 변경필요
+router.post('/getData', (req,res)=>{
     console.log('getData Router', req.body)
 
     // nick 데이터를 DB에 넣어보자! 
